@@ -446,11 +446,14 @@ scale_fill_gradient2(
 
 
 # FIGURE 3: effect of reduced reproductive rate (r) on population trajectories ----
+# SENSITIVITY OF POPULATION OUTCOME TO PRODUCTIVITY (r)
+# AND ANTHROPOGENIC MORTALITY (H)
+# ============================================================
 
 library(ggplot2)
 library(dplyr)
+library(tidyr)
 library(scales)
-library(ggnewscale)
 
 
 # ============================================================
@@ -460,425 +463,706 @@ library(ggnewscale)
 N0 <- 4973
 K  <- 6000
 
-r_scenarios <- c(
-  "Baseline r" = 0.118,
-  "50% reduction in r" = 0.118 * 0.50,
-  "75% reduction in r" = 0.118 * 0.25
-)
-
 years <- 0:200
 
-# Constant annual combined mortality
-takes <- seq(20, 200, by = 10)
+
+# ============================================================
+# PRODUCTIVITY RANGE
+#
+# r <= 0 is not explored because, with positive H,
+# the model has no positive sustainable equilibrium.
+# ============================================================
+
+r_values <- seq(
+  0,
+  0.12,
+  by = 0.001
+)
 
 
 # ============================================================
-# FUNCTION TO RUN ONE POPULATION TRAJECTORY
+# ANTHROPOGENIC MORTALITY RANGE
 # ============================================================
 
-run_model <- function(H,
-                      r_value,
-                      N0 = 4973,
-                      K = 6000,
-                      years = 0:200) {
+H_grid <- seq(
+  20,
+  200,
+  by = 2
+)
+
+
+# ============================================================
+# MODEL FUNCTION
+# ============================================================
+
+run_r_sensitivity <- function(
+    r_value,
+    H,
+    N0 = 4973,
+    K = 6000,
+    years = 0:200
+) {
   
-  N <- numeric(length(years))
+  N <- numeric(
+    length(years)
+  )
+  
   N[1] <- N0
+  
   
   for (t in 2:length(years)) {
     
     # Density-dependent population growth
-    growth <- r_value *
+    growth <-
+      r_value *
       N[t - 1] *
-      (1 - N[t - 1] / K)
+      (
+        1 -
+          N[t - 1] / K
+      )
+    
     
     # Population in following year
-    N[t] <- max(
-      0,
-      N[t - 1] + growth - H
-    )
+    N[t] <-
+      max(
+        0,
+        N[t - 1] +
+          growth -
+          H
+      )
   }
   
+  
   data.frame(
-    year = years,
-    population = N,
-    take = H,
-    r = r_value
+    
+    r =
+      r_value,
+    
+    H =
+      H,
+    
+    final_population =
+      last(N)
   )
 }
 
 
 # ============================================================
-# RUN ALL TAKE AND r SCENARIOS
+# RUN ALL r x H COMBINATIONS
 # ============================================================
 
-results_r <- bind_rows(
+surface_results <-
   
-  lapply(names(r_scenarios), function(scenario) {
+  expand_grid(
     
-    r_value <- r_scenarios[scenario]
+    r =
+      r_values,
     
-    bind_rows(
-      
-      lapply(takes, function(H) {
-        
-        run_model(
-          H = H,
-          r_value = r_value,
-          N0 = N0,
-          K = K,
-          years = years
-        )
-        
-      })
-      
-    ) %>%
-      
-      mutate(
-        r_scenario = scenario
-      )
+    H =
+      H_grid
     
-  })
-)
-
-
-# ============================================================
-# CALCULATE FINAL POPULATION FOR EACH TRAJECTORY
-# ============================================================
-
-results_r <- results_r %>%
-  
-  group_by(
-    r_scenario,
-    take
   ) %>%
   
-  mutate(
-    final_population = last(population)
+  rowwise() %>%
+  
+  do(
+    
+    run_r_sensitivity(
+      
+      r_value =
+        .$r,
+      
+      H =
+        .$H,
+      
+      N0 =
+        N0,
+      
+      K =
+        K,
+      
+      years =
+        years
+    )
   ) %>%
   
   ungroup()
 
 
 # ============================================================
-# ORDER THE r SCENARIOS
-# ============================================================
-
-results_r$r_scenario <- factor(
-  results_r$r_scenario,
-  levels = c(
-    "Baseline r",
-    "50% reduction in r",
-    "75% reduction in r"
-  )
-)
-
-
-# ============================================================
-# CREATE COLOR INDEX BASED ON FINAL POPULATION
+# CLEAN SURFACE DATA
 #
-# Final population < N0 = RED
-# Final population >= N0 = BLUE
-#
-# Lower final populations become increasingly dark red.
-# Higher final populations become increasingly dark blue.
+# Ensure exactly one population value for every r x H
+# combination.
 # ============================================================
 
-results_r <- results_r %>%
+surface_plot_data <-
   
-  mutate(
+  surface_results %>%
+  
+  group_by(
+    r,
+    H
+  ) %>%
+  
+  summarise(
     
-    color_index = if_else(
-      
-      final_population < N0,
-      
-      # RED portion of scale
-      # extinction = darkest red
-      # just below N0 = light red
-      0.49 * final_population / N0,
-      
-      # BLUE portion of scale
-      # N0 = light/medium blue
-      # approaching K = darkest blue
-      0.50 +
-        0.50 *
-        (final_population - N0) /
-        (K - N0)
-      
-    )
+    final_population =
+      mean(
+        final_population,
+        na.rm = TRUE
+      ),
+    
+    .groups =
+      "drop"
+  ) %>%
+  
+  arrange(
+    H,
+    r
   )
 
 
 # ============================================================
-# COLORS FOR ACTUAL POPULATION TRAJECTORIES
+# POPULATION ISO-LINES
 # ============================================================
 
-population_colors <- c(
-  "#99000D",   # very low population / extinction
-  "#FCAE91",   # just below starting population
-  "#6BAED6",   # at starting population
-  "#08306B"    # high final population
-)
-
-population_values <- c(
-  0,
-  0.49,
-  0.50,
-  1
+iso_breaks <- c(
+  500,
+  1000,
+  2000,
+  3000,
+  4000,
+  4900
 )
 
 
 # ============================================================
-# COLORS USED FOR ANNUAL-TAKE LEGEND
+# ISO-LINE LABEL LOCATIONS
 #
-# This reproduces the blue -> red legend style from Figure 1.
+# These are deliberately positioned similarly to Figure 2.
 # ============================================================
 
-blue_legend <- colorRampPalette(
-  c("#08306B", "#9ECAE1")
-)(9)
-
-red_legend <- colorRampPalette(
-  c("#FCAE91", "#99000D")
-)(10)
-
-take_colors_legend <- c(
-  blue_legend,
-  red_legend
-)
-
-names(take_colors_legend) <- as.character(takes)
-
-
-# ============================================================
-# DUMMY DATA USED ONLY TO GENERATE ANNUAL-TAKE LEGEND
-# ============================================================
-
-legend_data <- data.frame(
-  take = factor(
-    takes,
-    levels = takes
+label_positions <- data.frame(
+  
+  population =
+    iso_breaks,
+  
+  label_r = c(
+    0.035,   # 500
+    0.085,   # 1,000
+    0.045,   # 2,000
+    0.116,   # 3,000
+    0.115,   # 4,000
+    0.115    # 4,900
   ),
-  x = -10,
-  xend = -9,
-  y = -100,
-  yend = -100
+  
+  label_H = c(
+    80,     # 500
+    160,     # 1,000
+    95,      # 2,000
+    165,     # 3,000
+    135,     # 4,000
+    80       # 4,900
+  )
 )
 
 
 # ============================================================
-# FACET LABELS
-# Italicize r
+# FIND APPROXIMATE POINT ON EACH ISO-LINE
+#
+# These points are used only as the starting locations for
+# the short connector lines.
 # ============================================================
 
-facet_labels <- c(
-  "Baseline r" =
-    "Baseline~italic(r)",
+connector_points <-
   
-  "50% reduction in r" =
-    "50*'% reduction in '~italic(r)",
-  
-  "75% reduction in r" =
-    "75*'% reduction in '~italic(r)"
-)
-
-
-# ============================================================
-# FIGURE
-# ============================================================
-
-p_r <- ggplot(
-  results_r,
-  aes(
-    x = year,
-    y = population,
-    group = interaction(
-      r_scenario,
-      take
+  bind_rows(
+    
+    lapply(
+      
+      seq_along(
+        iso_breaks
+      ),
+      
+      function(i) {
+        
+        this_population <-
+          iso_breaks[i]
+        
+        this_r <-
+          label_positions$label_r[i]
+        
+        
+        surface_plot_data %>%
+          
+          mutate(
+            
+            # How close is this grid cell to the desired
+            # population iso-line?
+            population_distance =
+              abs(
+                final_population -
+                  this_population
+              ),
+            
+            
+            # Prefer a point near the desired label r value
+            r_distance =
+              abs(
+                r -
+                  this_r
+              )
+          ) %>%
+          
+          arrange(
+            
+            population_distance,
+            
+            r_distance
+          ) %>%
+          
+          slice(1) %>%
+          
+          mutate(
+            
+            population =
+              this_population,
+            
+            label_r =
+              label_positions$label_r[i],
+            
+            label_H =
+              label_positions$label_H[i]
+          )
+      }
     )
   )
-) +
-  
-  # ----------------------------------------------------------
-# POPULATION TRAJECTORIES
-# ----------------------------------------------------------
 
-geom_line(
-  aes(
-    color = color_index
-  ),
-  linewidth = 0.45,
-  show.legend = FALSE
-) +
-  
-  # Color trajectories according to FINAL population
-  scale_color_gradientn(
-    colours = population_colors,
-    values = population_values,
-    limits = c(0, 1),
-    guide = "none"
-  ) +
-  
-  
-  # ----------------------------------------------------------
-# SECOND COLOR SCALE:
-# ANNUAL TAKE LEGEND
-# ----------------------------------------------------------
 
-ggnewscale::new_scale_color() +
+# ============================================================
+# FIGURE 3
+# ============================================================
+
+p_r_surface <-
   
-  # Invisible/off-plot segments used only to create legend
-  geom_segment(
-    data = legend_data,
+  ggplot(
+    
+    surface_plot_data,
     
     aes(
-      x = x,
-      xend = xend,
-      y = y,
-      yend = yend,
-      color = take
-    ),
-    
-    inherit.aes = FALSE,
-    
-    linewidth = 0.7,
-    
-    show.legend = TRUE
-  ) +
-  
-  scale_color_manual(
-    values = take_colors_legend,
-    name = "Annual combined\ntake (whales/year)"
-  ) +
-  
-  guides(
-    color = guide_legend(
-      ncol = 2,
-      byrow = FALSE
+      
+      x =
+        r,
+      
+      y =
+        H,
+      
+      fill =
+        final_population
     )
+    
   ) +
   
   
-  # ----------------------------------------------------------
-# REFERENCE LINES
-# ----------------------------------------------------------
+  # ==========================================================
+# POPULATION SURFACE
+#
+# alpha = 1 ensures fully opaque colors.
+# ==========================================================
 
-# Starting population
-geom_hline(
-  yintercept = N0,
-  linetype = "dashed",
-  linewidth = 0.5,
-  color = "grey35"
+geom_tile(
+  alpha = 1
 ) +
   
-  # Carrying capacity
-  geom_hline(
-    yintercept = K,
-    linetype = "dotted",
-    linewidth = 0.5,
-    color = "grey65"
-  ) +
   
-  
-  # ----------------------------------------------------------
-# FACETS
-# ----------------------------------------------------------
+  # ==========================================================
+# POPULATION ISO-LINES
+# ==========================================================
 
-facet_wrap(
-  ~ r_scenario,
-  ncol = 1,
-  labeller = as_labeller(
-    facet_labels,
-    label_parsed
+geom_contour(
+  
+  aes(
+    
+    x =
+      r,
+    
+    y =
+      H,
+    
+    z =
+      final_population
   ),
-  axes = "all_x",
-  axis.labels = "margins"
+  
+  breaks =
+    iso_breaks,
+  
+  color =
+    "grey20",
+  
+  linewidth =
+    0.55
 ) +
   
-  # ----------------------------------------------------------
-# AXES
-# ----------------------------------------------------------
+  
+  # ==========================================================
+# CONNECTOR LINES FROM LABELS TO ISO-LINES
+# ==========================================================
+
+geom_segment(
+  
+  data =
+    connector_points,
+  
+  aes(
+    
+    x =
+      r,
+    
+    y =
+      H,
+    
+    xend =
+      label_r,
+    
+    yend =
+      label_H
+  ),
+  
+  inherit.aes =
+    FALSE,
+  
+  color =
+    "grey20",
+  
+  linewidth =
+    0.35
+) +
+  
+  
+  # ==========================================================
+# POPULATION ISO-LINE LABELS
+# ==========================================================
+
+geom_label(
+  
+  data =
+    label_positions,
+  
+  aes(
+    
+    x =
+      label_r,
+    
+    y =
+      label_H,
+    
+    label =
+      comma(
+        population
+      )
+  ),
+  
+  inherit.aes =
+    FALSE,
+  
+  size =
+    3.5,
+  
+  label.size =
+    0.25,
+  
+  fill =
+    alpha(
+      "white",
+      0.90
+    ),
+  
+  color =
+    "grey15",
+  
+  label.padding =
+    unit(
+      0.12,
+      "lines"
+    )
+) +
+  
+  
+  # ==========================================================
+# COLLAPSE / EXTINCTION
+#
+# Upper-left red region
+# ==========================================================
+
+annotate(
+  
+  "text",
+  
+  x =
+    0.012,
+  
+  y =
+    175,
+  
+  label =
+    "COLLAPSE /\nEXTINCTION",
+  
+  fontface =
+    "bold",
+  
+  size =
+    5,
+  
+  color =
+    "grey15",
+  
+  hjust =
+    0
+) +
+  
+  
+  # ==========================================================
+# PERSISTENCE
+#
+# Lower-right blue region
+# ==========================================================
+
+annotate(
+  
+  "text",
+  
+  x =
+    0.100,
+  
+  y =
+    53,
+  
+  label =
+    "PERSISTENCE",
+  
+  fontface =
+    "bold",
+  
+  size =
+    5,
+  
+  color =
+    "grey15",
+  
+  hjust =
+    0.5
+) +
+  
+  
+  # ==========================================================
+# COLOR SCALE
+#
+# IMPORTANT:
+# This now uses EXACTLY the same color logic as Figure 2.
+#
+# Values at or above N0 are squished to the darkest blue.
+# ==========================================================
+
+scale_fill_gradient2(
+  
+  low =
+    "#B45F5F",
+  
+  mid =
+    "#B9A8AE",
+  
+  high =
+    "#557A9B",
+  
+  midpoint =
+    2500,
+  
+  limits =
+    c(
+      0,
+      N0
+    ),
+  
+  oob =
+    scales::squish,
+  
+  breaks =
+    c(
+      0,
+      1000,
+      2000,
+      3000,
+      4000,
+      N0
+    ),
+  
+  labels =
+    c(
+      "0",
+      "1,000",
+      "2,000",
+      "3,000",
+      "4,000",
+      "4,973"
+    ),
+  
+  name =
+    "Population\nafter 200 years"
+) +
+  
+  
+  # ==========================================================
+# X AXIS
+# ==========================================================
 
 scale_x_continuous(
-  limits = c(0, 200),
-  breaks = seq(0, 200, by = 20),
-  expand = expansion(
-    mult = c(0, 0.01)
-  )
+  
+  breaks =
+    seq(
+      0,
+      0.12,
+      by =
+        0.02
+    ),
+  
+  labels =
+    number_format(
+      accuracy =
+        0.01
+    ),
+  
+  expand =
+    expansion(
+      mult =
+        c(
+          0,
+          0
+        )
+    )
 ) +
   
-  scale_y_continuous(
-    limits = c(0, 6200),
-    breaks = seq(0, 6000, by = 2000),
-    labels = comma,
-    expand = expansion(
-      mult = c(0, 0.02)
+  
+  # ==========================================================
+# Y AXIS
+# ==========================================================
+
+scale_y_continuous(
+  
+  breaks =
+    seq(
+      20,
+      200,
+      by =
+        20
+    ),
+  
+  expand =
+    expansion(
+      mult =
+        c(
+          0,
+          0
+        )
     )
-  ) +
+) +
   
   
-  # ----------------------------------------------------------
-# LABELS
-# ----------------------------------------------------------
+  # ==========================================================
+# PLOT WINDOW
+# ==========================================================
+
+coord_cartesian(
+  
+  xlim =
+    c(
+      0,
+      0.12
+    ),
+  
+  ylim =
+    c(
+      20,
+      200
+    ),
+  
+  expand =
+    FALSE
+) +
+  
+  
+  # ==========================================================
+# TITLES AND AXIS LABELS
+# ==========================================================
 
 labs(
   
   title =
-    "Reduced reproductive rate increases vulnerability to anthropogenic mortality",
+    "Population persistence depends jointly on productivity and anthropogenic mortality",
   
-  subtitle = paste0(
-    "N₀ = ",
-    comma(N0),
-    "; K = ",
-    comma(K),
-    "; annual combined take = 20–200 whales"
-  ),
+  subtitle =
+    paste0(
+      "Population after 200 years; ",
+      "N₀ = ",
+      comma(N0),
+      "; K = ",
+      comma(K)
+    ),
   
-  x = "Years",
+  x =
+    "Annual population growth parameter (r)",
   
-  y = "Humpback whale population"
+  y =
+    "Annual anthropogenic mortality (whales/year)"
 ) +
   
   
-  # ----------------------------------------------------------
+  # ==========================================================
 # THEME
-# ----------------------------------------------------------
+# ==========================================================
 
 theme_classic(
-  base_size = 13
+  
+  base_size =
+    13
 ) +
   
   theme(
     
-    plot.title = element_text(
-      face = "bold",
-      size = 16
-    ),
+    plot.title =
+      element_text(
+        
+        face =
+          "bold",
+        
+        size =
+          16
+      ),
     
-    plot.subtitle = element_text(
-      size = 11
-    ),
+    plot.subtitle =
+      element_text(
+        
+        size =
+          10.5
+      ),
     
-    strip.text = element_text(
-      face = "bold",
-      size = 12
-    ),
+    legend.title =
+      element_text(
+        
+        face =
+          "bold"
+      ),
     
-    legend.position = "right",
-    
-    legend.title = element_text(
-      face = "bold"
-    ),
-    
-    legend.text = element_text(
-      size = 10
-    )
+    legend.position =
+      "right"
   )
 
 
+# ============================================================
 # PRINT FIGURE
-p_r
+# ============================================================
 
+p_r_surface
 
 
 

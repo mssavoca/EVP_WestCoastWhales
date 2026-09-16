@@ -1734,24 +1734,20 @@ p_risk
 #
 # Each simulation has 30 years of stochastic history BEFORE
 # the spill and 100 years AFTER the spill.
-# ============================================================
 
 library(ggplot2)
 library(dplyr)
 library(scales)
 
 
-# ============================================================
+
 # PARAMETERS
-# ============================================================
 
 N0 <- 4973
 K  <- 6000
 
-# ------------------------------------------------------------
-# Good years
-# ------------------------------------------------------------
 
+# Good years
 good_r <- c(
   0.08,
   0.12
@@ -1763,10 +1759,8 @@ good_H <- c(
 )
 
 
-# ------------------------------------------------------------
-# Bad years
-# ------------------------------------------------------------
 
+# Bad years
 bad_r <- c(
   0.00,
   0.05
@@ -1778,20 +1772,16 @@ bad_H <- c(
 )
 
 
-# ------------------------------------------------------------
-# Oil spill
-# ------------------------------------------------------------
 
+# Oil spill
 spill_H <- 1000
 spill_r <- 0
 
 
-# ------------------------------------------------------------
-# Event-centered time window
-# ------------------------------------------------------------
 
+# Event-centered time window
 pre_years <- 30
-post_years <- 100
+post_years <- 5000
 
 relative_years <- (
   -pre_years:
@@ -1799,17 +1789,13 @@ relative_years <- (
 )
 
 
-# ------------------------------------------------------------
-# Number of simulations
-# ------------------------------------------------------------
 
+# Number of simulations
 n_sims <- 10000
 
 
-# ------------------------------------------------------------
-# Bad-year scenarios
-# ------------------------------------------------------------
 
+# Bad-year scenarios
 bad_frequencies <- c(
   0.10,
   0.40,
@@ -1817,10 +1803,8 @@ bad_frequencies <- c(
 )
 
 
-# ------------------------------------------------------------
-# Quasi-extinction threshold
-# ------------------------------------------------------------
 
+# Quasi-extinction threshold
 quasi_extinction <- 500
 
 
@@ -2241,6 +2225,62 @@ event_summary <-
 
 
 # ============================================================
+# SPILL VS. NO-SPILL RETURN TIMES
+# ============================================================
+
+return_comparison <-
+  
+  event_results %>%
+  
+  filter(
+    relative_year >= 0
+  ) %>%
+  
+  group_by(
+    bad_frequency_label,
+    scenario,
+    simulation
+  ) %>%
+  
+  summarise(
+    
+    first_return =
+      ifelse(
+        any(
+          population >= N0
+        ),
+        min(
+          relative_year[
+            population >= N0
+          ]
+        ),
+        NA_real_
+      ),
+    
+    .groups =
+      "drop"
+  ) %>%
+  
+  tidyr::pivot_wider(
+    
+    names_from =
+      scenario,
+    
+    values_from =
+      first_return
+  ) %>%
+  
+  mutate(
+    
+    spill_delay =
+      `Oil spill` -
+      `No spill`
+  )
+
+
+return_comparison
+
+# ============================================================
 # COLORS FOR THE THREE BAD-YEAR SCENARIOS
 # ============================================================
 
@@ -2617,6 +2657,647 @@ p_event
 
 
 
+# ============================================================
+# CORRECTED OIL-SPILL RECOVERY TABLE
+#
+# Two recovery metrics:
+#
+# 1. Return to N0:
+#    First year the spill trajectory reaches N0 = 4,973 whales.
+#
+# 2. Recovery to matched no-spill trajectory:
+#    First year the spill trajectory comes within 1% of the
+#    matched no-spill trajectory AND remains within 1% thereafter,
+#    provided the matched no-spill population remains above the
+#    quasi-extinction threshold of 500 whales.
+#
+# Recovery times are summarized as:
+#    median (25th-75th percentile)
+#
+# IMPORTANT:
+# This requires event_results to have been rerun with a sufficiently
+# long post-spill projection (e.g., post_years = 5000).
+# ============================================================
 
 
+library(dplyr)
+library(tidyr)
+library(scales)
 
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+
+starting_population <- N0
+quasi_extinction_threshold <- quasi_extinction
+
+
+# ============================================================
+# PUT SPILL AND NO-SPILL TRAJECTORIES ON SAME ROW
+# ============================================================
+
+paired_results <-
+  
+  event_results %>%
+  
+  filter(
+    relative_year >= 0
+  ) %>%
+  
+  select(
+    bad_frequency_label,
+    simulation,
+    relative_year,
+    scenario,
+    population
+  ) %>%
+  
+  pivot_wider(
+    names_from =
+      scenario,
+    values_from =
+      population
+  ) %>%
+  
+  arrange(
+    bad_frequency_label,
+    simulation,
+    relative_year
+  )
+
+
+# ============================================================
+# CALCULATE DEFICIT RELATIVE TO MATCHED NO-SPILL TRAJECTORY
+# ============================================================
+
+paired_results <-
+  
+  paired_results %>%
+  
+  mutate(
+    
+    proportional_deficit = case_when(
+      
+      `No spill` > 0 ~
+        pmax(
+          0,
+          (`No spill` - `Oil spill`) /
+            `No spill`
+        ),
+      
+      TRUE ~
+        NA_real_
+    ),
+    
+    # Spill has effectively recovered to its matched
+    # no-spill trajectory.
+    within_1pct =
+      proportional_deficit <= 0.01 &
+      `No spill` > quasi_extinction_threshold
+  )
+
+
+# ============================================================
+# FUNCTION:
+# FIRST YEAR OF SUSTAINED RECOVERY
+#
+# We require the population to be within 1% of the counterfactual
+# and to remain there for the rest of the projection.
+# ============================================================
+
+first_sustained_recovery <- function(
+    years,
+    recovered
+) {
+  
+  recovered[
+    is.na(recovered)
+  ] <- FALSE
+  
+  sustained_recovery <-
+    
+    rev(
+      cummin(
+        as.integer(
+          rev(
+            recovered
+          )
+        )
+      )
+    ) == 1
+  
+  possible_years <-
+    
+    years[
+      sustained_recovery
+    ]
+  
+  if (
+    length(
+      possible_years
+    ) == 0
+  ) {
+    
+    NA_real_
+    
+  } else {
+    
+    min(
+      possible_years
+    )
+  }
+}
+
+
+# ============================================================
+# CALCULATE RECOVERY TIME FOR EACH INDIVIDUAL SIMULATION
+# ============================================================
+
+recovery_by_sim <-
+  
+  paired_results %>%
+  
+  group_by(
+    bad_frequency_label,
+    simulation
+  ) %>%
+  
+  summarise(
+    
+    # --------------------------------------------------------
+    # A. RETURN TO STARTING POPULATION
+    # --------------------------------------------------------
+    
+    return_to_N0 = {
+      
+      years_returned <-
+        
+        relative_year[
+          `Oil spill` >=
+            starting_population
+        ]
+      
+      if (
+        length(
+          years_returned
+        ) == 0
+      ) {
+        
+        NA_real_
+        
+      } else {
+        
+        min(
+          years_returned
+        )
+      }
+    },
+    
+    
+    # --------------------------------------------------------
+    # B. RETURN TO MATCHED NO-SPILL TRAJECTORY
+    # --------------------------------------------------------
+    
+    return_to_counterfactual =
+      
+      first_sustained_recovery(
+        
+        years =
+          relative_year,
+        
+        recovered =
+          within_1pct
+      ),
+    
+    .groups =
+      "drop"
+  )
+
+
+# ============================================================
+# SUMMARIZE RECOVERY STATISTICS
+# ============================================================
+
+main_results_table <-
+  
+  recovery_by_sim %>%
+  
+  group_by(
+    
+    bad_frequency_label
+    
+  ) %>%
+  
+  summarise(
+    
+    # ========================================================
+    # A. RETURN TO N0
+    # ========================================================
+    
+    spill_return_rate =
+      
+      mean(
+        !is.na(
+          return_to_N0
+        )
+      ),
+    
+    spill_median_return =
+      
+      ifelse(
+        
+        any(
+          !is.na(
+            return_to_N0
+          )
+        ),
+        
+        median(
+          return_to_N0,
+          na.rm = TRUE
+        ),
+        
+        NA_real_
+      ),
+    
+    q25_spill_return =
+      
+      ifelse(
+        
+        any(
+          !is.na(
+            return_to_N0
+          )
+        ),
+        
+        quantile(
+          return_to_N0,
+          0.25,
+          na.rm = TRUE
+        ),
+        
+        NA_real_
+      ),
+    
+    q75_spill_return =
+      
+      ifelse(
+        
+        any(
+          !is.na(
+            return_to_N0
+          )
+        ),
+        
+        quantile(
+          return_to_N0,
+          0.75,
+          na.rm = TRUE
+        ),
+        
+        NA_real_
+      ),
+    
+    
+    # ========================================================
+    # B. RETURN TO MATCHED NO-SPILL TRAJECTORY
+    # ========================================================
+    
+    counterfactual_return_rate =
+      
+      mean(
+        !is.na(
+          return_to_counterfactual
+        )
+      ),
+    
+    counterfactual_median_return =
+      
+      ifelse(
+        
+        any(
+          !is.na(
+            return_to_counterfactual
+          )
+        ),
+        
+        median(
+          return_to_counterfactual,
+          na.rm = TRUE
+        ),
+        
+        NA_real_
+      ),
+    
+    q25_counterfactual_return =
+      
+      ifelse(
+        
+        any(
+          !is.na(
+            return_to_counterfactual
+          )
+        ),
+        
+        quantile(
+          return_to_counterfactual,
+          0.25,
+          na.rm = TRUE
+        ),
+        
+        NA_real_
+      ),
+    
+    q75_counterfactual_return =
+      
+      ifelse(
+        
+        any(
+          !is.na(
+            return_to_counterfactual
+          )
+        ),
+        
+        quantile(
+          return_to_counterfactual,
+          0.75,
+          na.rm = TRUE
+        ),
+        
+        NA_real_
+      ),
+    
+    # --------------------------------------------------------
+    # Number of simulations
+    # --------------------------------------------------------
+    
+    n_simulations = n(),
+    
+    .groups =
+      "drop"
+  )
+
+
+# ============================================================
+# FORMAT FOR REPORT
+# ============================================================
+
+main_results_table_formatted <-
+  
+  main_results_table %>%
+  
+  mutate(
+    
+    `Bad-year frequency` =
+      bad_frequency_label,
+    
+    
+    # --------------------------------------------------------
+    # SPILL RETURN TO N0
+    # --------------------------------------------------------
+    
+    `Spill simulations returning to N₀` =
+      percent(
+        spill_return_rate,
+        accuracy = 0.1
+      ),
+    
+    
+    `Median first return after spill (years)` =
+      
+      case_when(
+        
+        is.na(
+          spill_median_return
+        ) ~
+          
+          "Never",
+        
+        TRUE ~
+          
+          paste0(
+            
+            round(
+              spill_median_return,
+              0
+            ),
+            
+            " (",
+            
+            round(
+              q25_spill_return,
+              0
+            ),
+            
+            "–",
+            
+            round(
+              q75_spill_return,
+              0
+            ),
+            
+            ")"
+          )
+      ),
+    
+    
+    # --------------------------------------------------------
+    # RECOVERY TO MATCHED NO-SPILL TRAJECTORY
+    # --------------------------------------------------------
+    
+    `Simulations recovering to matched no-spill trajectory` =
+      percent(
+        counterfactual_return_rate,
+        accuracy = 0.1
+      ),
+    
+    
+    `Median first return to matched no-spill trajectory (years)` =
+      
+      case_when(
+        
+        is.na(
+          counterfactual_median_return
+        ) ~
+          
+          "Never",
+        
+        TRUE ~
+          
+          paste0(
+            
+            round(
+              counterfactual_median_return,
+              0
+            ),
+            
+            " (",
+            
+            round(
+              q25_counterfactual_return,
+              0
+            ),
+            
+            "–",
+            
+            round(
+              q75_counterfactual_return,
+              0
+            ),
+            
+            ")"
+          )
+      )
+  ) %>%
+  
+  select(
+    
+    `Bad-year frequency`,
+    
+    `Spill simulations returning to N₀`,
+    
+    `Median first return after spill (years)`,
+    
+    `Simulations recovering to matched no-spill trajectory`,
+    
+    `Median first return to matched no-spill trajectory (years)`
+    
+  )
+
+
+# ============================================================
+# PRINT
+# ============================================================
+
+main_results_table_formatted
+
+
+# ============================================================
+# EXPORT TO WORD
+# ============================================================
+
+library(flextable)
+library(officer)
+
+
+ft <-
+  
+  flextable(
+    main_results_table_formatted
+  )
+
+
+ft <-
+  
+  ft %>%
+  
+  # ----------------------------------------------------------
+# HEADER
+# ----------------------------------------------------------
+
+bold(
+  part = "header"
+) %>%
+  
+  fontsize(
+    size = 9,
+    part = "header"
+  ) %>%
+  
+  fontsize(
+    size = 9,
+    part = "body"
+  ) %>%
+  
+  # ----------------------------------------------------------
+# ALIGNMENT
+# ----------------------------------------------------------
+
+align(
+  j = 2:5,
+  align = "center",
+  part = "all"
+) %>%
+  
+  align(
+    j = 1,
+    align = "left",
+    part = "all"
+  ) %>%
+  
+  # ----------------------------------------------------------
+# BORDERS
+# ----------------------------------------------------------
+
+border_outer(
+  border = fp_border(
+    color = "black",
+    width = 1
+  )
+) %>%
+  
+  border_inner_h(
+    border = fp_border(
+      color = "grey70",
+      width = 0.5
+    )
+  ) %>%
+  
+  border_inner_v(
+    border = fp_border(
+      color = "grey70",
+      width = 0.5
+    )
+  ) %>%
+  
+  # ----------------------------------------------------------
+# COLUMN WIDTHS / AUTOFIT
+# ----------------------------------------------------------
+
+autofit()
+
+
+# ============================================================
+# CREATE WORD DOCUMENT
+# ============================================================
+
+doc <-
+  read_docx()
+
+
+doc <-
+  
+  body_add_par(
+    
+    doc,
+    
+    "Table. Population recovery following a single oil-spill event under alternative frequencies of environmentally unfavorable years.",
+    
+    style =
+      "Normal"
+  )
+
+
+doc <-
+  
+  body_add_flextable(
+    
+    doc,
+    
+    value =
+      ft
+  )
+
+
+# ============================================================
+# SAVE
+# ============================================================
+
+print(
+  
+  doc,
+  
+  target =
+    "oil_spill_recovery_results_table.docx"
+)
